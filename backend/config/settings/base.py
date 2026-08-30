@@ -59,6 +59,7 @@ INSTALLED_APPS = [
     "apps.catalog.apps.CatalogConfig",
     "apps.ledger.apps.LedgerConfig",
     "apps.debts.apps.DebtsConfig",
+    "apps.finance.apps.FinanceConfig",
 ]
 
 AUTH_USER_MODEL = "accounts.User"

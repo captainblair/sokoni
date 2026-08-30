@@ -7,19 +7,18 @@ from rest_framework.response import Response
 from apps.businesses.models import Business
 
 
-class BusinessScopedViewSet(viewsets.ModelViewSet):
+class BusinessScopedMixin:
     """
-    Base viewset for resources owned by a single business.
+    Resolves which business a request is talking about.
 
-    The business is resolved from an explicit `business` value when the client
-    sends one, otherwise from the user's active business — voice commands in
+    The business comes from an explicit `business` value when the client sends
+    one, otherwise from the user's active business — voice commands in
     particular arrive without naming a business. Either way the choice is
     validated against the user's memberships, so this is the only place tenant
     scoping has to be implemented correctly.
     """
 
     permission_classes = [IsAuthenticated]
-    search_fields: list[str] = []
 
     def get_business(self) -> Business:
         if hasattr(self, "_resolved_business"):
@@ -53,6 +52,12 @@ class BusinessScopedViewSet(viewsets.ModelViewSet):
 
         self._resolved_business = business
         return business
+
+
+class BusinessScopedViewSet(BusinessScopedMixin, viewsets.ModelViewSet):
+    """Base viewset for resources owned by a single business."""
+
+    search_fields: list[str] = []
 
     def get_queryset(self):
         if getattr(self, "detail", False):

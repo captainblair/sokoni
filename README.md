@@ -26,7 +26,8 @@ the arithmetic live in Django and PostgreSQL; the AI only proposes what to recor
 | B4 — Parties & catalog | ✅ Complete |
 | B5 — Financial ledger | ✅ Complete |
 | B6 — Debt management | ✅ Complete |
-| Everything after B6 | Planned (see roadmap) |
+| B7 — Financial intelligence | ✅ Complete |
+| Everything after B7 | Planned (see roadmap) |
 
 The project is built **one approved phase at a time**. Nothing below the "Planned" line
 exists in the codebase yet, and this README marks planned work explicitly so it is never
@@ -90,7 +91,7 @@ with partial payments, running balances, due dates, status and aging.
 
 ### Cash and float intelligence
 Informal businesses care less about accounting profit than about available float. Sokoni
-is designed to answer:
+answers:
 
 ```text
 You currently have KES 8,500 available.
@@ -196,7 +197,7 @@ deploy.
 | `apps.catalog` | Lightweight products and units | Built |
 | `apps.ledger` | Transactions and payment records | Built |
 | `apps.debts` | Receivables, payables, payments, aging | Built |
-| `apps.finance` | Cash position, summaries, float risk | Planned |
+| `apps.finance` | Cash position, summaries, float risk | Built |
 | `apps.insights` | Trends and alerts | Planned |
 | `apps.agent` | Tool registry and confirmation workflow | Planned |
 | `apps.voice` | Audio jobs, transcripts, TTS artifacts | Planned |
@@ -206,6 +207,10 @@ deploy.
 Layering convention: **views stay thin**. Serializers validate shape, permissions decide
 access, and domain services own the business rules. Money arithmetic belongs in
 `apps.finance`, never in a React component.
+
+Two module names carry that split consistently: a `services.py` is the only place a model
+is written, and a `selectors.py` is the only place numbers are derived from what is
+already there.
 
 ---
 
@@ -871,6 +876,120 @@ Debts are listed by due date, so the most pressing obligation is first.
 - A debt created from a transaction is amended by correcting that transaction, and the
   correction cannot fall below what has already been paid
 
+### Finance
+
+Four read-only reports. Nothing here is stored — a cash position saved to a column is a
+cash position that will eventually disagree with the transactions behind it.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/finance/cash-position/` | What is in hand and what is owed either way |
+| GET | `/api/v1/finance/summary/` | Revenue, costs and cash movement over a period |
+| GET | `/api/v1/finance/float-risk/` | Whether upcoming obligations can be met |
+| GET | `/api/v1/finance/daily-brief/` | All of the above, in sentences |
+
+**Two different questions**
+
+*Accrual* asks what the business earned: a sale is revenue the moment it happens, paid or
+not. *Cash* asks what the business can actually spend today. Informal traders live by the
+second and are judged by the first, so both are reported and never blended — `revenue` and
+`profit_estimate` are accrual, `cash_in`, `cash_out` and `available_cash` are cash.
+
+**Cash position**
+
+```json
+GET /api/v1/finance/cash-position/
+{
+  "available_cash": "8500.00",
+  "cash_in": "9000.00",
+  "cash_out": "500.00",
+  "receivables": "4200.00",
+  "receivables_overdue": "0.00",
+  "payables": "6000.00",
+  "projected_cash": "6700.00"
+}
+```
+
+`available_cash` counts only money that actually moved: amounts settled on transactions,
+plus payments against debts that were entered on their own. A debt created from a credit
+sale mirrors its payments back onto that transaction, so counting both would double the
+money. `receivables` and `payables` include credit transactions recorded without naming
+anyone — nobody to chase, but the money is owed all the same.
+
+**Summary**
+
+```json
+GET /api/v1/finance/summary/?period=month
+```
+
+| Parameter | Values |
+|-----------|--------|
+| `period` | `today` (default), `yesterday`, `week`, `month`, `year`, `all` |
+| `date_from`, `date_to` | An explicit range, in place of `period` |
+
+`week` means the last seven days rather than the calendar week, because a trader asking
+"how was this week" means the days just lived through. Alongside the totals, `by_type`
+groups on amount billed, while `by_payment_method` groups on what was actually settled: a
+credit sale has no payment method yet, and counting it as cash would describe money that
+never arrived.
+
+`profit_estimate` is revenue less costs and is named an estimate deliberately. There is no
+stock valuation, depreciation or owner's drawings in this model, and dressing the number
+up as an audited profit would be a lie of exactly the kind Sokoni is meant to avoid.
+
+**Float risk**
+
+The question that actually matters day to day. A profitable week is no comfort if the
+supplier arrives on Tuesday and the money is in other people's pockets.
+
+```json
+GET /api/v1/finance/float-risk/?days=7
+{
+  "available_cash": "1000.00",
+  "obligations_due": "2500.00",
+  "expected_receipts": "3000.00",
+  "shortfall": "1500.00",
+  "risk_level": "watch"
+}
+```
+
+| Level | Meaning |
+|-------|---------|
+| `none` | Cash on hand covers everything falling due |
+| `watch` | Covered only if customers pay on time — the assumption traders get burnt by |
+| `high` | Short even if everyone who owes pays |
+
+Overdue obligations always count as due. Debts nobody put a date on are reported separately
+as `undated_payables` and `undated_receivables` rather than folded into the window, because
+"sometime" is not a plan.
+
+**Daily brief**
+
+The numbers said back in ordinary language, assembled from the reports above. No AI is
+involved: the voice layer in a later phase reads these lines rather than inventing its own.
+
+```json
+GET /api/v1/finance/daily-brief/
+{
+  "headline": "You have KES 8,500 available.",
+  "messages": [
+    { "kind": "fact", "text": "You have KES 8,500 available." },
+    { "kind": "fact", "text": "Today you took in KES 9,000 and spent KES 500 across 3 entries." },
+    { "kind": "fact", "text": "Customers owe you KES 4,200." },
+    { "kind": "estimate", "text": "You may be short by about KES 1,500 in the next 7 days, unless the KES 3,000 owed to you comes in first." }
+  ]
+}
+```
+
+Every line is tagged `fact` or `estimate`. A number that came from arithmetic on recorded
+transactions and a number that depends on customers behaving as promised are not the same
+kind of claim, and a trader deciding whether to buy stock tomorrow deserves to know which
+one they are hearing. The full `cash_position`, `today` and `float_risk` objects are
+returned alongside the sentences.
+
+All four accept `business` to report on a specific business, and otherwise use the active
+one.
+
 An interactive OpenAPI/Swagger schema arrives in phase B9.
 
 ---
@@ -882,7 +1001,7 @@ cd backend
 pytest
 ```
 
-Currently **185 tests**, running in about 24 seconds:
+Currently **244 tests**, running in about 30 seconds:
 
 | Area | Coverage |
 |------|----------|
@@ -899,6 +1018,10 @@ Currently **185 tests**, running in about 24 seconds:
 | Ledger queries | Filters by type, status, method, source, date and party |
 | **Debts** | Instalments, balances, overpayment, write-offs, aging buckets |
 | Debt sync | Credit transactions opening debts, and payments settling them back |
+| **Cash position** | Accrual against cash, and money counted exactly once |
+| Summaries | Period boundaries, profit estimation, credit given, breakdowns |
+| Float risk | Risk levels, horizons, overdue and undated obligations |
+| Daily brief | Sentence wording, and facts kept distinct from estimates |
 
 Useful variations:
 
@@ -912,8 +1035,8 @@ pytest --create-db                          # rebuild the test database
 Tests run under `config/settings/test.py`, which uses a fast password hasher and reuses
 the test database. Your development data is never touched.
 
-Testing expands with each phase: financial calculation fixtures in B7 and AI extraction
-accuracy during the voice phases.
+Testing expands with each phase; AI extraction accuracy is measured during the voice
+phases.
 
 ---
 
@@ -981,9 +1104,15 @@ sokoni/
 │   │   │   ├── services.py    # The only write path for money
 │   │   │   ├── serializers.py
 │   │   │   └── views.py
-│   │   └── debts/             # Receivables and payables
-│   │       ├── models.py      # Debt, DebtPayment, aging buckets
-│   │       ├── services.py    # Payments, write-offs, ledger sync
+│   │   ├── debts/             # Receivables and payables
+│   │   │   ├── models.py      # Debt, DebtPayment, aging buckets
+│   │   │   ├── services.py    # Payments, write-offs, ledger sync
+│   │   │   ├── serializers.py
+│   │   │   └── views.py
+│   │   └── finance/           # Derived figures, no models of its own
+│   │       ├── selectors.py   # The only place numbers are calculated
+│   │       ├── periods.py     # "today", "week", "month" → date ranges
+│   │       ├── brief.py       # Facts and estimates turned into sentences
 │   │       ├── serializers.py
 │   │       └── views.py
 │   ├── config/
@@ -1014,6 +1143,11 @@ sokoni/
 │   │   ├── test_debts_isolation.py
 │   │   ├── test_debts_payments.py
 │   │   ├── test_debts_queries.py
+│   │   ├── test_finance_brief.py
+│   │   ├── test_finance_cash_position.py
+│   │   ├── test_finance_float_risk.py
+│   │   ├── test_finance_isolation.py
+│   │   ├── test_finance_summary.py
 │   │   ├── test_health.py
 │   │   ├── test_ledger_isolation.py
 │   │   ├── test_ledger_queries.py
@@ -1048,8 +1182,8 @@ Each phase is planned, approved, implemented, tested and reviewed before the nex
 | B4 | Parties (customers/suppliers) and a light product catalog | ✅ Complete |
 | B5 | Financial ledger — transactions, methods, statuses, `source` | ✅ Complete |
 | B6 | Debt management — receivables, payables, partial payments, aging | ✅ Complete |
-| B7 | Financial intelligence — cash position, summaries, float risk | Next |
-| B8 | Agent tool contracts and confirmation model (no LLM yet) | Planned |
+| B7 | Financial intelligence — cash position, summaries, float risk | ✅ Complete |
+| B8 | Agent tool contracts and confirmation model (no LLM yet) | Next |
 | B9 | OpenAPI docs, rate limiting, audit coverage, full regression suite | Planned |
 
 ### Frontend
