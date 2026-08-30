@@ -20,9 +20,9 @@ the arithmetic live in Django and PostgreSQL; the AI only proposes what to recor
 
 | Phase | Status |
 |-------|--------|
-| B1 — Backend foundation | Complete |
-| B2 — Authentication & users | Complete |
-| B3 — Business profiles & tenancy | Not started |
+| B1 — Backend foundation | ✅ Approved |
+| B2 — Authentication & users | ✅ Approved |
+| B3 — Business profiles & tenancy | ✅ Complete — awaiting review |
 | Everything after B3 | Planned (see roadmap) |
 
 The project is built **one approved phase at a time**. Nothing below the "Planned" line
@@ -186,9 +186,9 @@ deploy.
 | App | Responsibility | Status |
 |-----|----------------|--------|
 | `config` | Settings, URLs, WSGI/ASGI, environment loading | Built |
-| `apps.core` | Health check and shared utilities | Built |
+| `apps.core` | Health check, shared abstract models | Built |
 | `apps.accounts` | User model, JWT lifecycle, profile | Built |
-| `apps.businesses` | Business profiles, membership, tenant isolation | Planned |
+| `apps.businesses` | Business profiles, membership, tenant isolation | Built |
 | `apps.parties` | Customers and suppliers | Planned |
 | `apps.catalog` | Lightweight products and units | Planned |
 | `apps.ledger` | Transactions and payment records | Planned |
@@ -211,10 +211,24 @@ access, and domain services own the business rules. Money arithmetic belongs in
 Built today:
 
 ```text
-User
-  id (UUID) · email (unique, login) · full_name · phone_number
-  is_active · is_staff · date_joined · updated_at
+User                                    Business
+  id (UUID)                               id (UUID)
+  email (unique, login)                   name · business_type · currency
+  full_name · phone_number                location · phone_number · description
+  active_business ──────────────────────► is_active (archive flag)
+  is_active · is_staff                    created_by
+  date_joined · updated_at                created_at · updated_at
+
+                    Membership
+                      business ──► Business
+                      user ──────► User
+                      role (owner | member)
+                      invited_by
+                      unique (business, user)
 ```
+
+`Membership` is the tenancy boundary: a user reaches a business only through it,
+and every financial model added later hangs off `Business`.
 
 Planned shape once the ledger lands:
 
@@ -333,9 +347,13 @@ pass at the end.
   secure cookies and SSL redirect
 - CORS restricted to an allowlist
 
+- **Business-scoped querysets** — every business query goes through
+  `Business.objects.for_user(request.user)`, so a foreign ID returns 404
+- Role-based authorisation separating members from owners
+- A business can never be left without an owner
+
 **Planned**
 
-- Business-scoped querysets so no user can read another business's records (B3)
 - Rate limiting and throttling on auth and voice endpoints (B9)
 - Audit logging of every financial mutation
 - Confirmation gates before AI-driven writes
@@ -516,6 +534,62 @@ Invoke-RestMethod -Uri http://127.0.0.1:8000/api/v1/auth/me/ `
   -Headers @{ Authorization = "Bearer $($auth.access)" }
 ```
 
+### Businesses
+
+All endpoints require authentication and are scoped to the businesses you belong to.
+
+| Method | Path | Role | Purpose |
+|--------|------|------|---------|
+| GET | `/api/v1/businesses/` | member | List your businesses |
+| POST | `/api/v1/businesses/` | — | Create a business; you become its owner |
+| GET | `/api/v1/businesses/{id}/` | member | Retrieve one business |
+| PATCH | `/api/v1/businesses/{id}/` | owner | Update details |
+| DELETE | `/api/v1/businesses/{id}/` | owner | Archive (never hard-deleted) |
+| POST | `/api/v1/businesses/{id}/activate/` | member | Set your working business |
+| GET | `/api/v1/businesses/active/` | — | Your currently selected business |
+| GET | `/api/v1/businesses/{id}/members/` | member | List members |
+| POST | `/api/v1/businesses/{id}/members/` | owner | Add a member by email |
+| PATCH | `/api/v1/businesses/{id}/members/{membership_id}/` | owner | Change a role |
+| DELETE | `/api/v1/businesses/{id}/members/{membership_id}/` | owner | Remove a member |
+
+**Create a business**
+
+```json
+POST /api/v1/businesses/
+{
+  "name": "Amina Groceries",
+  "business_type": "retail",
+  "location": "Gikomba",
+  "phone_number": "+254712345678"
+}
+```
+
+```json
+201 Created
+{
+  "id": "6f1d…",
+  "name": "Amina Groceries",
+  "business_type": "retail",
+  "currency": "KES",
+  "location": "Gikomba",
+  "my_role": "owner",
+  "member_count": 1,
+  "created_at": "2026-08-30T18:20:04.113Z"
+}
+```
+
+Business types: `retail`, `market_vendor`, `food`, `services`, `transport`,
+`freelance`, `agriculture`, `other`.
+
+**Rules enforced by the backend**
+
+- Requesting a business you do not belong to returns **404**, not 403 — a foreign
+  record is never confirmed to exist
+- Members can read; only owners can update, archive or manage membership
+- A business can never lose its last owner, by removal or demotion
+- Archiving sets `is_active = false` and clears it from anyone's active selection
+- Your first business becomes your active business automatically
+
 An interactive OpenAPI/Swagger schema arrives in phase B9.
 
 ---
@@ -527,22 +601,32 @@ cd backend
 pytest
 ```
 
-Currently **23 tests**, covering registration validation, email normalisation, duplicate
-and weak-password rejection, login and refresh, token blacklisting on logout, profile
-isolation, password change, and the public health endpoint.
+Currently **59 tests**, running in about 8 seconds:
+
+| Area | Coverage |
+|------|----------|
+| Health | Endpoint stays public and reports database state |
+| Registration | Validation, email normalisation, duplicates, weak passwords |
+| Authentication | Login, refresh, verify, logout blacklisting, inactive accounts |
+| Profile | Self-only updates, password change |
+| Businesses | Creation, ownership, archiving, active-business context |
+| **Isolation** | Foreign businesses return 404 on read, update, archive and membership |
+| Membership | Adding by email, role changes, last-owner protection |
 
 Useful variations:
 
 ```bash
 pytest -v                                   # verbose
-pytest tests/test_accounts_auth.py          # one module
-pytest -k "logout"                          # match by name
+pytest tests/test_businesses_isolation.py   # one module
+pytest -k "isolation"                       # match by name
+pytest --create-db                          # rebuild the test database
 ```
 
-pytest creates and destroys its own test database, so your development data is untouched.
+Tests run under `config/settings/test.py`, which uses a fast password hasher and reuses
+the test database. Your development data is never touched.
 
-Testing expands with each phase: financial calculation fixtures in B7, cross-business
-isolation in B3, and AI extraction accuracy during the voice phases.
+Testing expands with each phase: financial calculation fixtures in B7 and AI extraction
+accuracy during the voice phases.
 
 ---
 
@@ -580,21 +664,32 @@ Reserved for later phases and intentionally unset: `ELEVENLABS_API_KEY`, `LLM_AP
 sokoni/
 ├── backend/
 │   ├── apps/
-│   │   ├── core/              # Health check and shared utilities
+│   │   ├── core/              # Health check, shared abstract models
+│   │   │   ├── models.py      # UUID + timestamp base classes
 │   │   │   ├── urls.py
 │   │   │   └── views.py
-│   │   └── accounts/          # User model and JWT authentication
+│   │   ├── accounts/          # User model and JWT authentication
+│   │   │   ├── admin.py
+│   │   │   ├── managers.py
+│   │   │   ├── migrations/
+│   │   │   ├── models.py
+│   │   │   ├── serializers.py
+│   │   │   ├── urls.py
+│   │   │   └── views.py
+│   │   └── businesses/        # Business profiles and tenancy
 │   │       ├── admin.py
-│   │       ├── managers.py
 │   │       ├── migrations/
-│   │       ├── models.py
+│   │       ├── models.py      # Business, Membership
+│   │       ├── permissions.py # IsBusinessMember, IsBusinessOwner
 │   │       ├── serializers.py
+│   │       ├── services.py    # Business rules kept out of views
 │   │       ├── urls.py
 │   │       └── views.py
 │   ├── config/
 │   │   ├── settings/
 │   │   │   ├── base.py        # Shared configuration
 │   │   │   ├── local.py       # Development overrides
+│   │   │   ├── test.py        # Fast hashing for the test suite
 │   │   │   └── production.py  # Hardened production settings
 │   │   ├── urls.py
 │   │   ├── asgi.py
@@ -608,6 +703,10 @@ sokoni/
 │   │   ├── test_accounts_auth.py
 │   │   ├── test_accounts_profile.py
 │   │   ├── test_accounts_registration.py
+│   │   ├── test_businesses_active_context.py
+│   │   ├── test_businesses_crud.py
+│   │   ├── test_businesses_isolation.py
+│   │   ├── test_businesses_membership.py
 │   │   └── test_health.py
 │   ├── Dockerfile
 │   ├── manage.py
@@ -630,10 +729,10 @@ Each phase is planned, approved, implemented, tested and reviewed before the nex
 
 | Phase | Objective | Status |
 |-------|-----------|--------|
-| B1 | Runnable Django project, Docker, Postgres, health check, pytest | Complete |
-| B2 | Custom user model and full JWT lifecycle | Complete |
-| B3 | Business profiles, membership, tenant isolation | Next |
-| B4 | Parties (customers/suppliers) and a light product catalog | Planned |
+| B1 | Runnable Django project, Docker, Postgres, health check, pytest | ✅ Approved |
+| B2 | Custom user model and full JWT lifecycle | ✅ Approved |
+| B3 | Business profiles, membership, tenant isolation | ✅ Complete |
+| B4 | Parties (customers/suppliers) and a light product catalog | Next |
 | B5 | Financial ledger — transactions, methods, statuses, `source` | Planned |
 | B6 | Debt management — receivables, payables, partial payments, aging | Planned |
 | B7 | Financial intelligence — cash position, summaries, float risk | Planned |

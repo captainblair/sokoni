@@ -36,6 +36,16 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_active = models.BooleanField(_("active"), default=True)
     is_staff = models.BooleanField(_("staff status"), default=False)
 
+    # The business a request applies to when the client does not name one.
+    # Voice commands in particular arrive without an explicit business.
+    active_business = models.ForeignKey(
+        "businesses.Business",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="users_with_active",
+    )
+
     date_joined = models.DateTimeField(_("date joined"), default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -10,10 +10,19 @@ User = get_user_model()
 class UserSerializer(serializers.ModelSerializer):
     """Public representation of an account. Never exposes the password hash."""
 
+    active_business = serializers.UUIDField(source="active_business_id", read_only=True)
+
     class Meta:
         model = User
-        fields = ["id", "email", "full_name", "phone_number", "date_joined"]
-        read_only_fields = ["id", "email", "date_joined"]
+        fields = [
+            "id",
+            "email",
+            "full_name",
+            "phone_number",
+            "active_business",
+            "date_joined",
+        ]
+        read_only_fields = ["id", "email", "active_business", "date_joined"]
 
 
 class RegistrationSerializer(serializers.ModelSerializer):
