@@ -20,9 +20,9 @@ the arithmetic live in Django and PostgreSQL; the AI only proposes what to recor
 
 | Phase | Status |
 |-------|--------|
-| B1 — Backend foundation | ✅ Approved |
-| B2 — Authentication & users | ✅ Approved |
-| B3 — Business profiles & tenancy | ✅ Complete — awaiting review |
+| B1 — Backend foundation | ✅ Complete |
+| B2 — Authentication & users | ✅ Complete |
+| B3 — Business profiles & tenancy | ✅ Complete |
 | Everything after B3 | Planned (see roadmap) |
 
 The project is built **one approved phase at a time**. Nothing below the "Planned" line
@@ -729,8 +729,8 @@ Each phase is planned, approved, implemented, tested and reviewed before the nex
 
 | Phase | Objective | Status |
 |-------|-----------|--------|
-| B1 | Runnable Django project, Docker, Postgres, health check, pytest | ✅ Approved |
-| B2 | Custom user model and full JWT lifecycle | ✅ Approved |
+| B1 | Runnable Django project, Docker, Postgres, health check, pytest | ✅ Complete |
+| B2 | Custom user model and full JWT lifecycle | ✅ Complete |
 | B3 | Business profiles, membership, tenant isolation | ✅ Complete |
 | B4 | Parties (customers/suppliers) and a light product catalog | Next |
 | B5 | Financial ledger — transactions, methods, statuses, `source` | Planned |
