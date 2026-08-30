@@ -1,0 +1,43 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Django
+backend/db.sqlite3
+backend/staticfiles/*
+!backend/staticfiles/.gitkeep
+backend/media/
+*.log
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Node / frontend (future)
+node_modules/
+.next/
+out/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Docker
+*.pid
