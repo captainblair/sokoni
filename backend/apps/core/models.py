@@ -32,3 +32,27 @@ class BaseModel(UUIDPrimaryKeyModel, TimeStampedModel):
 
     class Meta:
         abstract = True
+
+
+class BusinessScopedModel(BaseModel):
+    """
+    Base for anything that belongs to exactly one business.
+
+    Records are archived rather than deleted so that financial history stays
+    recoverable and auditable.
+    """
+
+    business = models.ForeignKey(
+        "businesses.Business",
+        on_delete=models.CASCADE,
+        related_name="%(class)ss",
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        abstract = True
+
+    def archive(self):
+        self.is_active = False
+        self.save(update_fields=["is_active", "updated_at"])
+        return self

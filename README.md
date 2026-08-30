@@ -23,7 +23,8 @@ the arithmetic live in Django and PostgreSQL; the AI only proposes what to recor
 | B1 — Backend foundation | ✅ Complete |
 | B2 — Authentication & users | ✅ Complete |
 | B3 — Business profiles & tenancy | ✅ Complete |
-| Everything after B3 | Planned (see roadmap) |
+| B4 — Parties & catalog | ✅ Complete |
+| Everything after B4 | Planned (see roadmap) |
 
 The project is built **one approved phase at a time**. Nothing below the "Planned" line
 exists in the codebase yet, and this README marks planned work explicitly so it is never
@@ -189,8 +190,8 @@ deploy.
 | `apps.core` | Health check, shared abstract models | Built |
 | `apps.accounts` | User model, JWT lifecycle, profile | Built |
 | `apps.businesses` | Business profiles, membership, tenant isolation | Built |
-| `apps.parties` | Customers and suppliers | Planned |
-| `apps.catalog` | Lightweight products and units | Planned |
+| `apps.parties` | Customers and suppliers | Built |
+| `apps.catalog` | Lightweight products and units | Built |
 | `apps.ledger` | Transactions and payment records | Planned |
 | `apps.debts` | Receivables, payables, payments, aging | Planned |
 | `apps.finance` | Cash position, summaries, float risk | Planned |
@@ -225,10 +226,19 @@ User                                    Business
                       role (owner | member)
                       invited_by
                       unique (business, user)
+
+Party                                   Product
+  business ──► Business                   business ──► Business
+  name (unique per business)              name (unique per business)
+  party_type (customer|supplier|both)     unit · default_price
+  phone_number · notes                    notes
+  is_active (archive flag)                is_active (archive flag)
 ```
 
 `Membership` is the tenancy boundary: a user reaches a business only through it,
-and every financial model added later hangs off `Business`.
+and every financial model hangs off `Business`. `Party` and `Product` are the first
+records to use `BusinessScopedModel`, the shared base that the ledger and debts will
+also build on.
 
 Planned shape once the ledger lands:
 
@@ -590,6 +600,64 @@ Business types: `retail`, `market_vendor`, `food`, `services`, `transport`,
 - Archiving sets `is_active = false` and clears it from anyone's active selection
 - Your first business becomes your active business automatically
 
+### Parties and products
+
+Both resources belong to a single business. The business is taken from your **active
+business** unless you send an explicit `business` value, so voice commands — which never
+name a business — work without extra ceremony.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET / POST | `/api/v1/parties/` | List or create customers and suppliers |
+| GET / PATCH / DELETE | `/api/v1/parties/{id}/` | Retrieve, update, archive |
+| GET / POST | `/api/v1/products/` | List or create products |
+| GET / PATCH / DELETE | `/api/v1/products/{id}/` | Retrieve, update, archive |
+
+Shared query parameters:
+
+| Parameter | Applies to | Effect |
+|-----------|-----------|--------|
+| `business` | both | Target a specific business you belong to |
+| `search` | both | Case-insensitive match on name (and phone or unit) |
+| `include_archived=true` | both | Include archived records |
+| `type` | parties | `customer` or `supplier` |
+
+**Create a customer**
+
+```json
+POST /api/v1/parties/
+{
+  "name": "Mary Wanjiku",
+  "party_type": "customer",
+  "phone_number": "+254712345678"
+}
+```
+
+Party types are `customer`, `supplier` or `both`. A trader who buys from you and also
+supplies you is **one record**, because in a later phase their receivable and payable
+balances have to net against each other.
+
+**Create a product**
+
+```json
+POST /api/v1/products/
+{
+  "name": "Soda crate",
+  "unit": "crate",
+  "default_price": "1200.00"
+}
+```
+
+`default_price` is a suggestion, never an enforced rate — informal prices move daily.
+
+**Rules enforced by the backend**
+
+- Names are unique per business, compared case-insensitively, so a spoken "jane" cannot
+  create a duplicate of an existing "Jane"
+- The same name may exist in different businesses
+- Records are archived rather than deleted
+- Records in another business return **404** on every operation
+
 An interactive OpenAPI/Swagger schema arrives in phase B9.
 
 ---
@@ -601,7 +669,7 @@ cd backend
 pytest
 ```
 
-Currently **59 tests**, running in about 8 seconds:
+Currently **96 tests**, running in about 5 seconds:
 
 | Area | Coverage |
 |------|----------|
@@ -610,8 +678,10 @@ Currently **59 tests**, running in about 8 seconds:
 | Authentication | Login, refresh, verify, logout blacklisting, inactive accounts |
 | Profile | Self-only updates, password change |
 | Businesses | Creation, ownership, archiving, active-business context |
-| **Isolation** | Foreign businesses return 404 on read, update, archive and membership |
+| **Isolation** | Foreign businesses and records return 404 on every operation |
 | Membership | Adding by email, role changes, last-owner protection |
+| Parties | Types, duplicate names, filtering, search, archiving |
+| Catalog | Prices, duplicates, search, archiving |
 
 Useful variations:
 
@@ -665,7 +735,9 @@ sokoni/
 ├── backend/
 │   ├── apps/
 │   │   ├── core/              # Health check, shared abstract models
-│   │   │   ├── models.py      # UUID + timestamp base classes
+│   │   │   ├── constants.py   # Money precision conventions
+│   │   │   ├── models.py      # UUID, timestamp and business-scoped bases
+│   │   │   ├── viewsets.py    # BusinessScopedViewSet — tenancy in one place
 │   │   │   ├── urls.py
 │   │   │   └── views.py
 │   │   ├── accounts/          # User model and JWT authentication
@@ -676,15 +748,17 @@ sokoni/
 │   │   │   ├── serializers.py
 │   │   │   ├── urls.py
 │   │   │   └── views.py
-│   │   └── businesses/        # Business profiles and tenancy
-│   │       ├── admin.py
-│   │       ├── migrations/
-│   │       ├── models.py      # Business, Membership
-│   │       ├── permissions.py # IsBusinessMember, IsBusinessOwner
-│   │       ├── serializers.py
-│   │       ├── services.py    # Business rules kept out of views
-│   │       ├── urls.py
-│   │       └── views.py
+│   │   ├── businesses/        # Business profiles and tenancy
+│   │   │   ├── admin.py
+│   │   │   ├── migrations/
+│   │   │   ├── models.py      # Business, Membership
+│   │   │   ├── permissions.py # IsBusinessMember, IsBusinessOwner
+│   │   │   ├── serializers.py
+│   │   │   ├── services.py    # Business rules kept out of views
+│   │   │   ├── urls.py
+│   │   │   └── views.py
+│   │   ├── parties/           # Customers and suppliers
+│   │   └── catalog/           # Products and units
 │   ├── config/
 │   │   ├── settings/
 │   │   │   ├── base.py        # Shared configuration
@@ -707,7 +781,10 @@ sokoni/
 │   │   ├── test_businesses_crud.py
 │   │   ├── test_businesses_isolation.py
 │   │   ├── test_businesses_membership.py
-│   │   └── test_health.py
+│   │   ├── test_catalog.py
+│   │   ├── test_health.py
+│   │   ├── test_parties.py
+│   │   └── test_parties_isolation.py
 │   ├── Dockerfile
 │   ├── manage.py
 │   └── pytest.ini
@@ -732,8 +809,8 @@ Each phase is planned, approved, implemented, tested and reviewed before the nex
 | B1 | Runnable Django project, Docker, Postgres, health check, pytest | ✅ Complete |
 | B2 | Custom user model and full JWT lifecycle | ✅ Complete |
 | B3 | Business profiles, membership, tenant isolation | ✅ Complete |
-| B4 | Parties (customers/suppliers) and a light product catalog | Next |
-| B5 | Financial ledger — transactions, methods, statuses, `source` | Planned |
+| B4 | Parties (customers/suppliers) and a light product catalog | ✅ Complete |
+| B5 | Financial ledger — transactions, methods, statuses, `source` | Next |
 | B6 | Debt management — receivables, payables, partial payments, aging | Planned |
 | B7 | Financial intelligence — cash position, summaries, float risk | Planned |
 | B8 | Agent tool contracts and confirmation model (no LLM yet) | Planned |

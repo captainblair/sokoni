@@ -55,6 +55,8 @@ INSTALLED_APPS = [
     "apps.core.apps.CoreConfig",
     "apps.accounts.apps.AccountsConfig",
     "apps.businesses.apps.BusinessesConfig",
+    "apps.parties.apps.PartiesConfig",
+    "apps.catalog.apps.CatalogConfig",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
