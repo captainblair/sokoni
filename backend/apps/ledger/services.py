@@ -95,7 +95,7 @@ def record_transaction(*, business, created_by=None, **fields) -> Transaction:
 
     fields.setdefault("currency", business.currency)
 
-    return Transaction.objects.create(
+    instance = Transaction.objects.create(
         business=business,
         created_by=created_by,
         amount=amount,
@@ -103,6 +103,24 @@ def record_transaction(*, business, created_by=None, **fields) -> Transaction:
         amount_paid=amount_paid,
         **fields,
     )
+
+    _sync_debt(instance)
+    return instance
+
+
+def _sync_debt(instance: Transaction) -> None:
+    """
+    Mirrors an unsettled transaction into the debt ledger.
+
+    Imported here rather than at module level because debts build on the ledger,
+    so importing in both directions at import time would be circular.
+    """
+    from apps.debts.services import DebtRuleViolation, sync_debt_for_transaction
+
+    try:
+        sync_debt_for_transaction(instance)
+    except DebtRuleViolation as exc:
+        raise LedgerRuleViolation(str(exc)) from exc
 
 
 @db_transaction.atomic
@@ -115,6 +133,14 @@ def update_transaction(instance: Transaction, **fields) -> Transaction:
     """
     status_given = "payment_status" in fields
     paid_given = "amount_paid" in fields
+
+    if (status_given or paid_given) and getattr(instance, "debt", None) is not None:
+        # One way to do one thing: settlement of a tracked debt happens through
+        # the debt, so its payment history stays the record of what was paid.
+        raise LedgerRuleViolation(
+            "Settlement of this transaction is tracked as a debt. Record the "
+            "payment against the debt instead."
+        )
 
     for field, value in fields.items():
         setattr(instance, field, value)
@@ -140,4 +166,6 @@ def update_transaction(instance: Transaction, **fields) -> Transaction:
 
     instance.full_clean(exclude=["business", "created_by"])
     instance.save()
+
+    _sync_debt(instance)
     return instance

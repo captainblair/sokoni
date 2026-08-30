@@ -25,7 +25,8 @@ the arithmetic live in Django and PostgreSQL; the AI only proposes what to recor
 | B3 — Business profiles & tenancy | ✅ Complete |
 | B4 — Parties & catalog | ✅ Complete |
 | B5 — Financial ledger | ✅ Complete |
-| Everything after B5 | Planned (see roadmap) |
+| B6 — Debt management | ✅ Complete |
+| Everything after B6 | Planned (see roadmap) |
 
 The project is built **one approved phase at a time**. Nothing below the "Planned" line
 exists in the codebase yet, and this README marks planned work explicitly so it is never
@@ -194,7 +195,7 @@ deploy.
 | `apps.parties` | Customers and suppliers | Built |
 | `apps.catalog` | Lightweight products and units | Built |
 | `apps.ledger` | Transactions and payment records | Built |
-| `apps.debts` | Receivables, payables, payments, aging | Planned |
+| `apps.debts` | Receivables, payables, payments, aging | Built |
 | `apps.finance` | Cash position, summaries, float risk | Planned |
 | `apps.insights` | Trends and alerts | Planned |
 | `apps.agent` | Tool registry and confirmation workflow | Planned |
@@ -246,14 +247,28 @@ Party                                   Product
                    occurred_at · description · notes
                    source · reference · created_by
                    is_active (archive flag)
+
+                 Debt                            DebtPayment
+                   business ──► Business           debt ──► Debt
+                   party ─────► Party              amount · paid_at
+                   debt_type (receivable|payable)  payment_method
+                   original_amount · amount_paid   notes · source
+                   status · due_date               created_by
+                   source_transaction ──► Transaction (nullable, one-to-one)
+                   description · notes · source
+                   is_active (archive flag)
 ```
 
 `Membership` is the tenancy boundary: a user reaches a business only through it,
-and every financial model hangs off `Business`. `Party` and `Product` are the first
-records to use `BusinessScopedModel`, the shared base that the ledger and debts will
-also build on.
+and every financial model hangs off `Business`. `Party`, `Product`, `Transaction` and
+`Debt` all use `BusinessScopedModel`, the shared base that carries the business link and
+the archive flag.
 
-Planned shape once the ledger lands:
+`Debt` and `Transaction` describe the same obligation from two angles, so the link between
+them is deliberately one-directional: the debt owns the settlement history, and the
+transaction mirrors it.
+
+Planned shape once the remaining models land:
 
 ```text
 User ──< Membership >── Business
@@ -725,14 +740,12 @@ POST /api/v1/transactions/
 }
 ```
 
-Later, when part of it is settled:
+Because a supplier is named and the money is still owed, the backend also opens a **debt**
+against Jane automatically. Settling it happens through that debt (see below), and the
+transaction's `payment_status` and `outstanding_amount` follow along.
 
-```json
-PATCH /api/v1/transactions/{id}/
-{ "amount_paid": "300.00" }
-```
-
-The status becomes `partial` and `outstanding_amount` becomes `500.00`.
+A credit transaction with no party stays a plain unsettled transaction: with nobody named
+there is nobody to chase, so no debt is created and `amount_paid` can be patched directly.
 
 **Vocabulary**
 
@@ -766,6 +779,97 @@ The status becomes `partial` and `outstanding_amount` becomes `500.00`.
 - A party or product from another business cannot be attached
 - Currency always follows the business
 - Transactions are archived, never deleted
+- A transaction whose settlement is tracked as a debt rejects direct `amount_paid` edits
+
+### Debts
+
+Credit is how informal trade actually works, so debt is a first-class record rather than a
+transaction with a flag. A debt is an obligation in one direction: a **receivable** is
+money owed to the business, a **payable** is money the business owes.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET / POST | `/api/v1/debts/` | List or record debts |
+| GET / PATCH / DELETE | `/api/v1/debts/{id}/` | Retrieve, amend, archive |
+| GET / POST | `/api/v1/debts/{id}/payments/` | Payment history, or record an instalment |
+| POST | `/api/v1/debts/{id}/write-off/` | Mark as uncollectable |
+
+**Where debts come from**
+
+Most debts are never typed in. Recording a credit or partly paid transaction against a
+named party opens the matching debt automatically — a credit sale becomes a receivable, a
+credit purchase becomes a payable — so "I sold Mary sugar, she'll pay Friday" is one
+sentence, not two records.
+
+A debt can also be recorded on its own, for money owed from before the business started
+using Sokoni:
+
+```json
+POST /api/v1/debts/
+{
+  "debt_type": "receivable",
+  "party": "<customer id>",
+  "original_amount": "800.00",
+  "due_date": "2026-09-05",
+  "description": "Sugar taken on credit"
+}
+```
+
+**Record a payment**
+
+```json
+POST /api/v1/debts/{id}/payments/
+{ "amount": "500.00", "payment_method": "mpesa" }
+```
+
+```json
+GET /api/v1/debts/{id}/
+{
+  "original_amount": "800.00",
+  "amount_paid": "500.00",
+  "balance": "300.00",
+  "status": "partial",
+  "days_overdue": 0,
+  "aging_bucket": "current",
+  "payments": [{ "amount": "500.00", "payment_method": "mpesa", "paid_at": "..." }]
+}
+```
+
+Every instalment is kept, so a trader can see that Mary paid 500 on Monday and 300 on
+Thursday rather than only a shrinking balance.
+
+**Vocabulary**
+
+| Field | Values |
+|-------|--------|
+| `debt_type` | `receivable`, `payable` |
+| `status` | `open`, `partial`, `settled`, `written_off` |
+| `aging_bucket` | `current`, `1-7`, `8-30`, `31-60`, `60+` |
+
+`status` is derived from the amounts and never set by hand. `aging_bucket` and
+`days_overdue` are computed from `due_date`, and a settled debt is never overdue.
+
+**Filters**
+
+| Parameter | Effect |
+|-----------|--------|
+| `type`, `status`, `party` | Match that field |
+| `outstanding=true` | Only debts with money still to move |
+| `overdue=true` | Outstanding and past the due date |
+| `due_before` | Falling due on or before a date |
+| `search` | Description, notes or party name |
+| `business`, `include_archived` | As for parties and products |
+
+Debts are listed by due date, so the most pressing obligation is first.
+
+**Rules enforced by the backend**
+
+- A debt always names a party; there is no such thing as an anonymous debt
+- A payment can never exceed the outstanding balance
+- A settled or written-off debt takes no further payment
+- Paying a debt updates the transaction it came from, so revenue is never counted twice
+- A debt created from a transaction is amended by correcting that transaction, and the
+  correction cannot fall below what has already been paid
 
 An interactive OpenAPI/Swagger schema arrives in phase B9.
 
@@ -778,7 +882,7 @@ cd backend
 pytest
 ```
 
-Currently **141 tests**, running in about 6 seconds:
+Currently **185 tests**, running in about 24 seconds:
 
 | Area | Coverage |
 |------|----------|
@@ -793,6 +897,8 @@ Currently **141 tests**, running in about 6 seconds:
 | Catalog | Prices, duplicates, search, archiving |
 | **Ledger** | Money direction, payment consistency, overpayment, corrections |
 | Ledger queries | Filters by type, status, method, source, date and party |
+| **Debts** | Instalments, balances, overpayment, write-offs, aging buckets |
+| Debt sync | Credit transactions opening debts, and payments settling them back |
 
 Useful variations:
 
@@ -870,9 +976,14 @@ sokoni/
 │   │   │   └── views.py
 │   │   ├── parties/           # Customers and suppliers
 │   │   ├── catalog/           # Products and units
-│   │   └── ledger/            # Transactions
-│   │       ├── models.py      # Transaction, types, statuses, sources
-│   │       ├── services.py    # The only write path for money
+│   │   ├── ledger/            # Transactions
+│   │   │   ├── models.py      # Transaction, types, statuses, sources
+│   │   │   ├── services.py    # The only write path for money
+│   │   │   ├── serializers.py
+│   │   │   └── views.py
+│   │   └── debts/             # Receivables and payables
+│   │       ├── models.py      # Debt, DebtPayment, aging buckets
+│   │       ├── services.py    # Payments, write-offs, ledger sync
 │   │       ├── serializers.py
 │   │       └── views.py
 │   ├── config/
@@ -898,6 +1009,11 @@ sokoni/
 │   │   ├── test_businesses_isolation.py
 │   │   ├── test_businesses_membership.py
 │   │   ├── test_catalog.py
+│   │   ├── test_debts_crud.py
+│   │   ├── test_debts_from_transactions.py
+│   │   ├── test_debts_isolation.py
+│   │   ├── test_debts_payments.py
+│   │   ├── test_debts_queries.py
 │   │   ├── test_health.py
 │   │   ├── test_ledger_isolation.py
 │   │   ├── test_ledger_queries.py
@@ -931,8 +1047,8 @@ Each phase is planned, approved, implemented, tested and reviewed before the nex
 | B3 | Business profiles, membership, tenant isolation | ✅ Complete |
 | B4 | Parties (customers/suppliers) and a light product catalog | ✅ Complete |
 | B5 | Financial ledger — transactions, methods, statuses, `source` | ✅ Complete |
-| B6 | Debt management — receivables, payables, partial payments, aging | Next |
-| B7 | Financial intelligence — cash position, summaries, float risk | Planned |
+| B6 | Debt management — receivables, payables, partial payments, aging | ✅ Complete |
+| B7 | Financial intelligence — cash position, summaries, float risk | Next |
 | B8 | Agent tool contracts and confirmation model (no LLM yet) | Planned |
 | B9 | OpenAPI docs, rate limiting, audit coverage, full regression suite | Planned |
 

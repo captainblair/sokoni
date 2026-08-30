@@ -58,6 +58,7 @@ INSTALLED_APPS = [
     "apps.parties.apps.PartiesConfig",
     "apps.catalog.apps.CatalogConfig",
     "apps.ledger.apps.LedgerConfig",
+    "apps.debts.apps.DebtsConfig",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
