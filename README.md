@@ -24,7 +24,8 @@ the arithmetic live in Django and PostgreSQL; the AI only proposes what to recor
 | B2 — Authentication & users | ✅ Complete |
 | B3 — Business profiles & tenancy | ✅ Complete |
 | B4 — Parties & catalog | ✅ Complete |
-| Everything after B4 | Planned (see roadmap) |
+| B5 — Financial ledger | ✅ Complete |
+| Everything after B5 | Planned (see roadmap) |
 
 The project is built **one approved phase at a time**. Nothing below the "Planned" line
 exists in the codebase yet, and this README marks planned work explicitly so it is never
@@ -192,7 +193,7 @@ deploy.
 | `apps.businesses` | Business profiles, membership, tenant isolation | Built |
 | `apps.parties` | Customers and suppliers | Built |
 | `apps.catalog` | Lightweight products and units | Built |
-| `apps.ledger` | Transactions and payment records | Planned |
+| `apps.ledger` | Transactions and payment records | Built |
 | `apps.debts` | Receivables, payables, payments, aging | Planned |
 | `apps.finance` | Cash position, summaries, float risk | Planned |
 | `apps.insights` | Trends and alerts | Planned |
@@ -233,6 +234,18 @@ Party                                   Product
   party_type (customer|supplier|both)     unit · default_price
   phone_number · notes                    notes
   is_active (archive flag)                is_active (archive flag)
+
+                 Transaction
+                   business ──► Business
+                   party ─────► Party      (nullable)
+                   product ───► Product    (nullable)
+                   transaction_type (sale|income|purchase|expense)
+                   amount · amount_paid · currency
+                   payment_status · payment_method
+                   quantity · unit_price
+                   occurred_at · description · notes
+                   source · reference · created_by
+                   is_active (archive flag)
 ```
 
 `Membership` is the tenancy boundary: a user reaches a business only through it,
@@ -260,9 +273,9 @@ User ──< Membership >── Business
               AuditEvent  ←── every financial mutation
 ```
 
-Every transaction will carry a `source` field distinguishing `manual`, `voice`,
-`import`, `api`, `system` and later `mpesa`. This drives both auditability and the
-academic evaluation, which compares voice entry against form entry.
+Every transaction carries a `source` field distinguishing `manual`, `voice`, `import`,
+`api`, `system` and later `mpesa`. This drives both auditability and the academic
+evaluation, which compares voice entry against form entry.
 
 The model is **event-oriented rather than strict double-entry**. Full double-entry would
 add rigour that this user base does not need and a vocabulary they do not use.
@@ -658,6 +671,102 @@ POST /api/v1/products/
 - Records are archived rather than deleted
 - Records in another business return **404** on every operation
 
+### Transactions
+
+The ledger. Scoped to a business exactly like parties and products.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET / POST | `/api/v1/transactions/` | List or record transactions |
+| GET / PATCH / DELETE | `/api/v1/transactions/{id}/` | Retrieve, correct, archive |
+
+**Record a sale**
+
+```json
+POST /api/v1/transactions/
+{
+  "transaction_type": "sale",
+  "quantity": "2",
+  "unit_price": "1200.00",
+  "party": "<customer id>",
+  "product": "<product id>",
+  "payment_method": "mpesa",
+  "description": "Two crates of soda"
+}
+```
+
+```json
+201 Created
+{
+  "transaction_type": "sale",
+  "amount": "2400.00",
+  "amount_paid": "2400.00",
+  "outstanding_amount": "0.00",
+  "signed_amount": "2400.00",
+  "payment_status": "paid",
+  "currency": "KES",
+  "source": "manual"
+}
+```
+
+`amount` may be omitted when `quantity` and `unit_price` are given — "two crates at
+1,200" is how a sale gets spoken, so the total is derived rather than demanded.
+
+**Record something bought on credit**
+
+```json
+POST /api/v1/transactions/
+{
+  "transaction_type": "purchase",
+  "amount": "800.00",
+  "party": "<supplier id>",
+  "payment_status": "credit",
+  "description": "Tomatoes"
+}
+```
+
+Later, when part of it is settled:
+
+```json
+PATCH /api/v1/transactions/{id}/
+{ "amount_paid": "300.00" }
+```
+
+The status becomes `partial` and `outstanding_amount` becomes `500.00`.
+
+**Vocabulary**
+
+| Field | Values |
+|-------|--------|
+| `transaction_type` | `sale`, `income`, `purchase`, `expense` |
+| `payment_status` | `paid`, `partial`, `credit` |
+| `payment_method` | `cash`, `mpesa`, `bank`, `credit`, `other` |
+| `source` | `manual`, `voice`, `import`, `api`, `system`, `mpesa` |
+
+`sale` and `income` bring money in; `purchase` and `expense` take it out, which is what
+`signed_amount` reflects.
+
+**Filters**
+
+| Parameter | Effect |
+|-----------|--------|
+| `type`, `status`, `method`, `source` | Match that field |
+| `party`, `product` | Transactions involving one record |
+| `unsettled=true` | Anything still owed in either direction |
+| `date_from`, `date_to` | ISO 8601 range on `occurred_at` |
+| `search` | Description, notes or reference |
+| `business`, `include_archived` | As for parties and products |
+
+**Rules enforced by the backend**
+
+- Amounts must be positive, and `amount_paid` can never exceed `amount`
+- Payment status and amount paid must agree; a contradiction is rejected rather than
+  silently corrected
+- A transaction cannot be dated in the future
+- A party or product from another business cannot be attached
+- Currency always follows the business
+- Transactions are archived, never deleted
+
 An interactive OpenAPI/Swagger schema arrives in phase B9.
 
 ---
@@ -669,7 +778,7 @@ cd backend
 pytest
 ```
 
-Currently **96 tests**, running in about 5 seconds:
+Currently **141 tests**, running in about 6 seconds:
 
 | Area | Coverage |
 |------|----------|
@@ -682,6 +791,8 @@ Currently **96 tests**, running in about 5 seconds:
 | Membership | Adding by email, role changes, last-owner protection |
 | Parties | Types, duplicate names, filtering, search, archiving |
 | Catalog | Prices, duplicates, search, archiving |
+| **Ledger** | Money direction, payment consistency, overpayment, corrections |
+| Ledger queries | Filters by type, status, method, source, date and party |
 
 Useful variations:
 
@@ -758,7 +869,12 @@ sokoni/
 │   │   │   ├── urls.py
 │   │   │   └── views.py
 │   │   ├── parties/           # Customers and suppliers
-│   │   └── catalog/           # Products and units
+│   │   ├── catalog/           # Products and units
+│   │   └── ledger/            # Transactions
+│   │       ├── models.py      # Transaction, types, statuses, sources
+│   │       ├── services.py    # The only write path for money
+│   │       ├── serializers.py
+│   │       └── views.py
 │   ├── config/
 │   │   ├── settings/
 │   │   │   ├── base.py        # Shared configuration
@@ -783,6 +899,10 @@ sokoni/
 │   │   ├── test_businesses_membership.py
 │   │   ├── test_catalog.py
 │   │   ├── test_health.py
+│   │   ├── test_ledger_isolation.py
+│   │   ├── test_ledger_queries.py
+│   │   ├── test_ledger_relations.py
+│   │   ├── test_ledger_transactions.py
 │   │   ├── test_parties.py
 │   │   └── test_parties_isolation.py
 │   ├── Dockerfile
@@ -810,8 +930,8 @@ Each phase is planned, approved, implemented, tested and reviewed before the nex
 | B2 | Custom user model and full JWT lifecycle | ✅ Complete |
 | B3 | Business profiles, membership, tenant isolation | ✅ Complete |
 | B4 | Parties (customers/suppliers) and a light product catalog | ✅ Complete |
-| B5 | Financial ledger — transactions, methods, statuses, `source` | Next |
-| B6 | Debt management — receivables, payables, partial payments, aging | Planned |
+| B5 | Financial ledger — transactions, methods, statuses, `source` | ✅ Complete |
+| B6 | Debt management — receivables, payables, partial payments, aging | Next |
 | B7 | Financial intelligence — cash position, summaries, float risk | Planned |
 | B8 | Agent tool contracts and confirmation model (no LLM yet) | Planned |
 | B9 | OpenAPI docs, rate limiting, audit coverage, full regression suite | Planned |
