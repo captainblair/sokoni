@@ -1,3 +1,4 @@
+from drf_spectacular.utils import extend_schema
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -16,6 +17,7 @@ from apps.finance.serializers import (
 MAX_HORIZON_DAYS = 365
 
 
+@extend_schema(tags=["finance"])
 class FinanceView(BusinessScopedMixin, APIView):
     """Base for the read-only finance reports."""
 

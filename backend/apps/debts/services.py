@@ -38,6 +38,7 @@ def create_debt(*, business, created_by=None, **fields) -> Debt:
 
     debt.status = debt.resolved_status()
     debt.save()
+    _audit_debt(debt, actor=created_by, action="created")
     return debt
 
 
@@ -57,6 +58,10 @@ def record_payment(
             f"Payment of {amount} exceeds the outstanding balance of {debt.balance}."
         )
 
+    from apps.audit.services import snapshot, DEBT_FIELDS
+
+    debt_before = snapshot(debt, DEBT_FIELDS)
+
     payment = DebtPayment.objects.create(
         debt=debt, amount=amount, created_by=created_by, **fields
     )
@@ -66,11 +71,15 @@ def record_payment(
     debt.save(update_fields=["amount_paid", "status", "updated_at"])
 
     _mirror_to_transaction(debt)
+
+    from apps.audit.services import record_payment_event
+
+    record_payment_event(payment, actor=created_by, debt_before=debt_before)
     return payment
 
 
 @db_transaction.atomic
-def write_off_debt(debt: Debt, *, notes: str = "") -> Debt:
+def write_off_debt(debt: Debt, *, notes: str = "", actor=None) -> Debt:
     """
     Marks a debt as uncollectable.
 
@@ -80,10 +89,23 @@ def write_off_debt(debt: Debt, *, notes: str = "") -> Debt:
     if debt.status == DebtStatus.SETTLED:
         raise DebtRuleViolation("A settled debt cannot be written off.")
 
+    from apps.audit.models import AuditAction
+    from apps.audit.services import snapshot, DEBT_FIELDS
+
+    before = snapshot(debt, DEBT_FIELDS)
+    outstanding = str(debt.balance)
+
     debt.status = DebtStatus.WRITTEN_OFF
     if notes:
         debt.notes = f"{debt.notes}\n{notes}".strip()
     debt.save(update_fields=["status", "notes", "updated_at"])
+    _audit_debt(
+        debt,
+        actor=actor,
+        action=AuditAction.WRITTEN_OFF,
+        before=before,
+        extra={"notes": notes, "outstanding_when_written_off": outstanding},
+    )
     return debt
 
 
@@ -143,9 +165,39 @@ def sync_debt_for_transaction(transaction) -> Debt | None:
             "this debt."
         )
 
+    from apps.audit.models import AuditAction
+    from apps.audit.services import snapshot, DEBT_FIELDS
+
+    before = snapshot(debt, DEBT_FIELDS)
     debt.original_amount = transaction.amount
     debt.party = transaction.party or debt.party
     debt.description = transaction.description
     debt.status = debt.resolved_status()
     debt.save(update_fields=["original_amount", "party", "description", "status", "updated_at"])
+    if before != snapshot(debt, DEBT_FIELDS):
+        _audit_debt(
+            debt,
+            actor=transaction.created_by,
+            action=AuditAction.UPDATED,
+            before=before,
+        )
     return debt
+
+
+@db_transaction.atomic
+def archive_debt(debt: Debt, *, actor=None) -> Debt:
+    from apps.audit.models import AuditAction
+    from apps.audit.services import snapshot, DEBT_FIELDS
+
+    before = snapshot(debt, DEBT_FIELDS)
+    debt.archive()
+    _audit_debt(debt, actor=actor, action=AuditAction.ARCHIVED, before=before)
+    return debt
+
+
+def _audit_debt(instance, *, actor, action: str, before=None, extra=None) -> None:
+    from apps.audit.services import record_debt_event
+
+    record_debt_event(
+        instance, actor=actor, action=action, before=before, extra=extra
+    )

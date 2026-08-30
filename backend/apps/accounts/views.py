@@ -4,8 +4,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.views import (
+    TokenObtainPairView,
+    TokenRefreshView,
+    TokenVerifyView,
+)
 
+from apps.core.throttles import AuthRateThrottle
 from apps.accounts.serializers import (
     LoginSerializer,
     LogoutSerializer,
@@ -21,6 +26,7 @@ class RegistrationView(generics.CreateAPIView):
     serializer_class = RegistrationSerializer
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = [AuthRateThrottle]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -42,6 +48,7 @@ class LoginView(TokenObtainPairView):
     serializer_class = LoginSerializer
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = [AuthRateThrottle]
 
 
 class LogoutView(APIView):
@@ -72,6 +79,18 @@ class CurrentUserView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return self.request.user
+
+
+class RefreshView(TokenRefreshView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [AuthRateThrottle]
+
+
+class VerifyView(TokenVerifyView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [AuthRateThrottle]
 
 
 class PasswordChangeView(APIView):

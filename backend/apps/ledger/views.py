@@ -1,10 +1,13 @@
+from rest_framework import status
 from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
 
 from apps.core.viewsets import BusinessScopedViewSet
 from apps.ledger.models import Transaction
 from apps.ledger.serializers import TransactionSerializer
 from apps.ledger.services import (
     LedgerRuleViolation,
+    archive_transaction,
     record_transaction,
     update_transaction,
 )
@@ -62,3 +65,7 @@ class TransactionViewSet(BusinessScopedViewSet):
             )
         except LedgerRuleViolation as exc:
             raise ValidationError({"detail": str(exc)}) from exc
+
+    def destroy(self, request, *args, **kwargs):
+        archive_transaction(self.get_object(), actor=request.user)
+        return Response(status=status.HTTP_204_NO_CONTENT)

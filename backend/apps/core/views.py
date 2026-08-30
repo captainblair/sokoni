@@ -1,10 +1,12 @@
 from django.db import connection
 from django.db.utils import OperationalError
+from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 
+@extend_schema(tags=["health"], auth=[])
 class HealthCheckView(APIView):
     """
     Lightweight liveness/readiness probe for local Docker and Render.

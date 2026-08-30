@@ -1,3 +1,4 @@
+from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
@@ -7,6 +8,7 @@ from rest_framework.views import APIView
 from apps.agent import confirmation, execution
 from apps.agent.registry import ToolContext, ToolError, UnknownTool, all_tools, get_tool
 from apps.agent.serializers import OutcomeSerializer, ToolCallSerializer
+from apps.core.throttles import AgentRateThrottle
 from apps.core.viewsets import BusinessScopedMixin
 
 
@@ -20,6 +22,7 @@ class ToolRegistryView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(tags=["agent"])
     def get(self, request):
         return Response({"tools": [tool.schema() for tool in all_tools()]})
 
@@ -33,6 +36,13 @@ class ExecuteToolView(BusinessScopedMixin, APIView):
     second entrance, and no way to reach the database except through a tool.
     """
 
+    throttle_classes = [AgentRateThrottle]
+
+    @extend_schema(
+        tags=["agent"],
+        request=ToolCallSerializer,
+        responses={200: OutcomeSerializer, 201: OutcomeSerializer, 400: OutcomeSerializer},
+    )
     def post(self, request):
         call = ToolCallSerializer(data=request.data)
         call.is_valid(raise_exception=True)

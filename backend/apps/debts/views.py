@@ -12,6 +12,7 @@ from apps.debts.serializers import (
 )
 from apps.debts.services import (
     DebtRuleViolation,
+    archive_debt,
     create_debt,
     record_payment,
     write_off_debt,
@@ -67,6 +68,10 @@ class DebtViewSet(BusinessScopedViewSet):
         debt.status = debt.resolved_status()
         debt.save(update_fields=["status", "updated_at"])
 
+    def destroy(self, request, *args, **kwargs):
+        archive_debt(self.get_object(), actor=request.user)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=True, methods=["get", "post"], url_path="payments")
     def payments(self, request, pk=None):
         debt = self.get_object()
@@ -95,7 +100,11 @@ class DebtViewSet(BusinessScopedViewSet):
         serializer.is_valid(raise_exception=True)
 
         try:
-            write_off_debt(debt, notes=serializer.validated_data.get("notes", ""))
+            write_off_debt(
+                debt,
+                notes=serializer.validated_data.get("notes", ""),
+                actor=request.user,
+            )
         except DebtRuleViolation as exc:
             raise ValidationError({"detail": str(exc)}) from exc
 

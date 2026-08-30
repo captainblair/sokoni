@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
+    "drf_spectacular",
     # Local
     "apps.core.apps.CoreConfig",
     "apps.accounts.apps.AccountsConfig",
@@ -61,6 +62,7 @@ INSTALLED_APPS = [
     "apps.debts.apps.DebtsConfig",
     "apps.finance.apps.FinanceConfig",
     "apps.agent.apps.AgentConfig",
+    "apps.audit.apps.AuditConfig",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -158,6 +160,41 @@ REST_FRAMEWORK = {
     # Endpoints are private unless a view explicitly opts out.
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
+    ],
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": env("THROTTLE_ANON", "60/min") or "60/min",
+        "user": env("THROTTLE_USER", "120/min") or "120/min",
+        "auth": env("THROTTLE_AUTH", "10/min") or "10/min",
+        "agent": env("THROTTLE_AGENT", "30/min") or "30/min",
+    },
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Sokoni API",
+    "DESCRIPTION": (
+        "Voice-first financial operating system for informal businesses. "
+        "The client and the AI propose; Django validates and commits."
+    ),
+    "VERSION": "0.9.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,
+    "SCHEMA_PATH_PREFIX": r"/api/v1",
+    "TAGS": [
+        {"name": "health", "description": "Liveness and readiness"},
+        {"name": "auth", "description": "Registration, JWT, profile"},
+        {"name": "businesses", "description": "Tenancy and membership"},
+        {"name": "parties", "description": "Customers and suppliers"},
+        {"name": "catalog", "description": "Products and units"},
+        {"name": "ledger", "description": "Sales, income, purchases, expenses"},
+        {"name": "debts", "description": "Receivables, payables, payments"},
+        {"name": "finance", "description": "Cash position, summaries, float risk"},
+        {"name": "agent", "description": "Tool registry and confirmed execution"},
+        {"name": "audit", "description": "Immutable trail of money mutations"},
     ],
 }
 

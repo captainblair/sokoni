@@ -28,7 +28,8 @@ the arithmetic live in Django and PostgreSQL; the AI only proposes what to recor
 | B6 — Debt management | ✅ Complete |
 | B7 — Financial intelligence | ✅ Complete |
 | B8 — Agent tools & confirmation | ✅ Complete |
-| Everything after B8 | Planned (see roadmap) |
+| B9 — OpenAPI, rate limits, audit | ✅ Complete |
+| Everything after B9 | Planned (see roadmap) |
 
 The project is built **one approved phase at a time**. Nothing below the "Planned" line
 exists in the codebase yet, and this README marks planned work explicitly so it is never
@@ -170,7 +171,7 @@ degrade into an LLM wrapped around a database.
 | Database | PostgreSQL 16 | Relational integrity for money; the ledger is not a document store |
 | Auth | `djangorestframework-simplejwt` | Stateless tokens suit a separate PWA client |
 | Async | Celery + Redis *(planned)* | Briefs, analysis and TTS must not block API requests |
-| API docs | drf-spectacular *(planned)* | OpenAPI generated from the real serializers |
+| API docs | drf-spectacular | OpenAPI generated from the real serializers |
 | Tests | pytest + pytest-django | Fast, fixture-driven, readable assertions |
 | Frontend | Next.js + TypeScript + Tailwind *(planned)* | Mobile-first PWA consuming the REST API |
 | Speech | ElevenLabs *(planned)* | STT and TTS, including a custom Sokoni voice |
@@ -202,7 +203,7 @@ deploy.
 | `apps.insights` | Trends and alerts | Planned |
 | `apps.agent` | Tool registry and confirmation workflow | Built |
 | `apps.voice` | Audio jobs, transcripts, TTS artifacts | Planned |
-| `apps.audit` | Immutable trail of financial mutations | Planned |
+| `apps.audit` | Immutable trail of financial mutations | Built |
 | `apps.integrations` | M-Pesa and future channels | Planned |
 
 Layering convention: **views stay thin**. Serializers validate shape, permissions decide
@@ -270,6 +271,13 @@ Party                                   Product
                    token · tool · parameters
                    question · reason · confidence
                    expires_at · consumed_at
+
+                 AuditEvent
+                   business ──► Business
+                   actor ─────► User
+                   action · object_type · object_id
+                   summary · before · after · source
+                   created_at (no updated_at — written once)
 ```
 
 `Membership` is the tenancy boundary: a user reaches a business only through it,
@@ -281,7 +289,8 @@ the archive flag.
 them is deliberately one-directional: the debt owns the settlement history, and the
 transaction mirrors it.
 
-Planned shape once the remaining models land:
+`AuditEvent` hangs off every money write. The remaining planned models (voice jobs,
+insights, integrations) will point at the same business:
 
 ```text
 User ──< Membership >── Business
@@ -407,11 +416,13 @@ pass at the end.
 - A fixed agent tool registry: the only operations an AI may name
 - Confirmation gates on writes that are uncertain, unusually large, or name a stranger
 - Confirmation tokens bound to the user and business that raised them, single-use, expiring
+- Rate limits on login, registration, token refresh, and the agent door
+- An append-only audit trail of every money mutation, uneditable even from admin
 
 **Planned**
 
-- Rate limiting and throttling on auth and voice endpoints (B9)
-- Audit logging of every financial mutation
+- Audit of non-financial mutations (membership, catalog) if a later phase needs it
+- Redis-backed throttle counters in production (local uses the process cache)
 
 A user must never retrieve another business's financial data by changing an ID in a URL.
 This is enforced with tests, not assumed.
@@ -1109,7 +1120,39 @@ question that is never answered leaves no half-finished customer behind.
 - A confirmation cannot be reused, expired, spent on another tool, or spent on another
   business — including another of the same user's businesses
 
-An interactive OpenAPI/Swagger schema arrives in phase B9.
+### Audit
+
+Every money mutation leaves a row that cannot be changed or deleted. The books can be
+corrected — a misheard 24,000 becomes 2,400 — but the fact that the correction happened
+stays.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/audit-events/` | The trail for the selected business |
+| GET | `/api/v1/audit-events/{id}/` | One event |
+
+There is no POST, PATCH or DELETE. A client that tries to rewrite history is refused.
+
+Each event records who acted, what kind of record changed, a one-line summary, and a
+before/after snapshot of the money fields. Filters: `action`, `object_type`, `object_id`,
+`source`.
+
+A credit sale produces two events — the transaction and the debt it opened — because two
+records appeared. A payment produces one event against the instalment, with the debt's
+previous balance in `before`.
+
+### API documentation
+
+The schema is generated from the serializers the API actually uses, not written by hand.
+
+| Path | What |
+|------|------|
+| `GET /api/schema/` | OpenAPI 3 document (JSON or YAML) |
+| `GET /api/docs/` | Swagger UI |
+| `GET /api/redoc/` | ReDoc |
+
+These three are public: they describe the contract, not anyone's books. Every other
+endpoint still requires a token, except health, registration, login, refresh and verify.
 
 ---
 
@@ -1120,7 +1163,7 @@ cd backend
 pytest
 ```
 
-Currently **312 tests**, running in about 17 seconds:
+Currently **334 tests**, running in about 22 seconds:
 
 | Area | Coverage |
 |------|----------|
@@ -1145,6 +1188,10 @@ Currently **312 tests**, running in about 17 seconds:
 | Agent writes | Spoken names, voice source, the same validation as the REST API |
 | Confirmation | Low confidence, unusual amounts, new names, single-use tokens |
 | Clarification | Ambiguous names, and a party owing both ways |
+| **Audit** | Events for writes, before/after snapshots, immutability, isolation |
+| Throttling | Auth and agent doors close after the first abuse |
+| OpenAPI | Schema lists every built surface and is public |
+| Regression | Register → trade → confirm a spoken sale → the books still add up |
 
 Useful variations:
 
@@ -1188,6 +1235,10 @@ Copy `.env.example` to `.env` and adjust. **Never commit `.env`.**
 | `AGENT_CONFIDENCE_THRESHOLD` | `0.75` | Below this, a write waits for a yes |
 | `AGENT_UNUSUAL_AMOUNT_FACTOR` | `5` | Multiple of a typical sale treated as possibly misheard |
 | `AGENT_CONFIRMATION_TTL_SECONDS` | `300` | How long a pending confirmation stays answerable |
+| `THROTTLE_ANON` | `60/min` | Unauthenticated requests (health excepted from the tight auth limit) |
+| `THROTTLE_USER` | `120/min` | Authenticated API use |
+| `THROTTLE_AUTH` | `10/min` | Login, register, refresh, verify |
+| `THROTTLE_AGENT` | `30/min` | Tool execution — the door a voice pipeline will use |
 
 Reserved for later phases and intentionally unset: `ELEVENLABS_API_KEY`, `LLM_API_KEY`,
 `MPESA_CONSUMER_KEY`, `MPESA_CONSUMER_SECRET`.
@@ -1203,6 +1254,7 @@ sokoni/
 │   │   ├── core/              # Health check, shared abstract models
 │   │   │   ├── constants.py   # Money precision conventions
 │   │   │   ├── models.py      # UUID, timestamp and business-scoped bases
+│   │   │   ├── throttles.py   # Auth and agent rate limits
 │   │   │   ├── viewsets.py    # BusinessScopedViewSet — tenancy in one place
 │   │   │   ├── urls.py
 │   │   │   └── views.py
@@ -1241,13 +1293,17 @@ sokoni/
 │   │   │   ├── brief.py       # Facts and estimates turned into sentences
 │   │   │   ├── serializers.py
 │   │   │   └── views.py
-│   │   └── agent/             # Tool registry and confirmation, no LLM
-│   │       ├── registry.py    # The fixed list of operations
-│   │       ├── tools.py       # Thin wrappers over domain services
-│   │       ├── resolvers.py   # Spoken names → records
-│   │       ├── confirmation.py
-│   │       ├── execution.py   # Validate → resolve → maybe ask → write
-│   │       └── views.py
+│   │   ├── agent/             # Tool registry and confirmation, no LLM
+│   │   │   ├── registry.py    # The fixed list of operations
+│   │   │   ├── tools.py       # Thin wrappers over domain services
+│   │   │   ├── resolvers.py   # Spoken names → records
+│   │   │   ├── confirmation.py
+│   │   │   ├── execution.py   # Validate → resolve → maybe ask → write
+│   │   │   └── views.py
+│   │   └── audit/             # Append-only trail of money mutations
+│   │       ├── models.py      # AuditEvent, immutable after insert
+│   │       ├── services.py    # The only place events are written
+│   │       └── views.py       # Read-only list and detail
 │   ├── config/
 │   │   ├── settings/
 │   │   │   ├── base.py        # Shared configuration
@@ -1275,7 +1331,11 @@ sokoni/
 │   │   ├── test_agent_reads.py
 │   │   ├── test_agent_registry.py
 │   │   ├── test_agent_writes.py
+│   │   ├── test_audit.py
 │   │   ├── test_catalog.py
+│   │   ├── test_openapi.py
+│   │   ├── test_regression.py
+│   │   ├── test_throttling.py
 │   │   ├── test_debts_crud.py
 │   │   ├── test_debts_from_transactions.py
 │   │   ├── test_debts_isolation.py
@@ -1322,21 +1382,21 @@ Each phase is planned, approved, implemented, tested and reviewed before the nex
 | B6 | Debt management — receivables, payables, partial payments, aging | ✅ Complete |
 | B7 | Financial intelligence — cash position, summaries, float risk | ✅ Complete |
 | B8 | Agent tool contracts and confirmation model (no LLM yet) | ✅ Complete |
-| B9 | OpenAPI docs, rate limiting, audit coverage, full regression suite | Next |
+| B9 | OpenAPI docs, rate limiting, audit coverage, full regression suite | ✅ Complete |
 
 ### Frontend
 
-| Phase | Objective |
-|-------|-----------|
-| F0 | Map endpoints to screens and design the frontend architecture |
-| F1 | Next.js + TypeScript + Tailwind foundation and typed API client |
-| F2 | Authentication screens |
-| F3 | Dashboard — available, owed, owing, today's activity, alerts |
-| F4 | Transaction recording and history |
-| F5 | Debt management |
-| F6 | Financial insights |
-| F7 | PWA and mobile polish |
-| F8 | Frontend testing |
+| Phase | Objective | Status |
+|-------|-----------|--------|
+| F0 | Map endpoints to screens and design the frontend architecture | Next |
+| F1 | Next.js + TypeScript + Tailwind foundation and typed API client | Planned |
+| F2 | Authentication screens | Planned |
+| F3 | Dashboard — available, owed, owing, today's activity, alerts | Planned |
+| F4 | Transaction recording and history | Planned |
+| F5 | Debt management | Planned |
+| F6 | Financial insights | Planned |
+| F7 | PWA and mobile polish | Planned |
+| F8 | Frontend testing | Planned |
 
 ### Voice and AI
 

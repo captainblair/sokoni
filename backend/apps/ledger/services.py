@@ -105,6 +105,7 @@ def record_transaction(*, business, created_by=None, **fields) -> Transaction:
     )
 
     _sync_debt(instance)
+    _audit_transaction(instance, actor=created_by, action="created")
     return instance
 
 
@@ -133,6 +134,10 @@ def update_transaction(instance: Transaction, **fields) -> Transaction:
     """
     status_given = "payment_status" in fields
     paid_given = "amount_paid" in fields
+
+    from apps.audit.services import snapshot, TRANSACTION_FIELDS
+
+    before = snapshot(instance, TRANSACTION_FIELDS)
 
     if (status_given or paid_given) and getattr(instance, "debt", None) is not None:
         # One way to do one thing: settlement of a tracked debt happens through
@@ -168,4 +173,30 @@ def update_transaction(instance: Transaction, **fields) -> Transaction:
     instance.save()
 
     _sync_debt(instance)
+    _audit_transaction(
+        instance, actor=instance.created_by, action="updated", before=before
+    )
     return instance
+
+
+@db_transaction.atomic
+def archive_transaction(instance: Transaction, *, actor=None) -> Transaction:
+    from apps.audit.models import AuditAction
+    from apps.audit.services import snapshot, TRANSACTION_FIELDS
+
+    before = snapshot(instance, TRANSACTION_FIELDS)
+    instance.archive()
+    _audit_transaction(instance, actor=actor, action=AuditAction.ARCHIVED, before=before)
+    return instance
+
+
+def _audit_transaction(instance, *, actor, action: str, before=None) -> None:
+    from apps.audit.models import AuditAction
+    from apps.audit.services import record_transaction_event
+
+    record_transaction_event(
+        instance,
+        actor=actor,
+        action=action if action in AuditAction.values else action,
+        before=before,
+    )
