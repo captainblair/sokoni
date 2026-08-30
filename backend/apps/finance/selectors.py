@@ -16,6 +16,7 @@ reported, separately and never blended.
 
 from datetime import timedelta
 from decimal import Decimal
+from statistics import median
 
 from django.db.models import Count, DecimalField, F, Sum, Value
 from django.db.models.functions import Coalesce
@@ -125,6 +126,39 @@ def _outstanding(business, debt_type: str) -> dict:
     }
 
 
+def party_balance(business, party) -> dict:
+    """
+    Where one person stands with the business.
+
+    Answering "how much does John owe me?" has to net both directions, because a
+    customer who also supplies goods is one relationship, not two.
+    """
+    debts = _debts(business).filter(party=party).outstanding()
+    balance = F("original_amount") - F("amount_paid")
+
+    owed_to_business = _sum(debts.receivables(), balance)
+    owed_by_business = _sum(debts.payables(), balance)
+
+    untracked = (
+        _transactions(business)
+        .filter(party=party)
+        .unsettled()
+        .exclude(debt__is_active=True)
+    )
+    owed_to_business += _sum(untracked.money_in(), F("amount") - F("amount_paid"))
+    owed_by_business += _sum(untracked.money_out(), F("amount") - F("amount_paid"))
+
+    return {
+        "currency": business.currency,
+        "party": party.name,
+        "owed_to_business": owed_to_business,
+        "owed_by_business": owed_by_business,
+        "net_balance": owed_to_business - owed_by_business,
+        "overdue": _sum(debts.overdue(), balance),
+        "open_debts": debts.count(),
+    }
+
+
 def summary(business, period) -> dict:
     """Revenue, costs and cash movement over a period."""
     transactions = _transactions(business).in_period(period.start, period.end)
@@ -176,6 +210,30 @@ def summary(business, period) -> dict:
             transactions.filter(amount_paid__gt=ZERO), "payment_method", "amount_paid"
         ),
     }
+
+
+def typical_transaction_amount(
+    business, *, days: int = 90, minimum_sample: int = 5
+) -> Decimal | None:
+    """
+    The size of an ordinary transaction for this business.
+
+    The median rather than the mean, because one wholesale purchase should not
+    redefine what "ordinary" means for a trader who otherwise sells in hundreds.
+    Returns nothing when there is too little history to make the comparison
+    honest — a claim about what is normal needs evidence of normal.
+    """
+    since = timezone.now() - timedelta(days=days)
+    amounts = list(
+        _transactions(business)
+        .in_period(since, None)
+        .order_by("-occurred_at")
+        .values_list("amount", flat=True)[:500]
+    )
+
+    if len(amounts) < minimum_sample:
+        return None
+    return Decimal(median(amounts)).quantize(Decimal("0.01"))
 
 
 def _grouped(queryset, field: str, amount_field: str = "amount") -> list[dict]:

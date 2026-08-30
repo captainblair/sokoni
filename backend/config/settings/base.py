@@ -60,6 +60,7 @@ INSTALLED_APPS = [
     "apps.ledger.apps.LedgerConfig",
     "apps.debts.apps.DebtsConfig",
     "apps.finance.apps.FinanceConfig",
+    "apps.agent.apps.AgentConfig",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -181,3 +182,20 @@ CORS_ALLOW_CREDENTIALS = True
 
 # Redis (reserved for Celery in later phases — config only in B1)
 REDIS_URL = env("REDIS_URL", "redis://localhost:6379/0")
+
+# Agent safety thresholds. These govern when a spoken instruction is committed
+# straight away and when Sokoni stops to ask, so they are configuration rather
+# than constants: the right caution for a kiosk is not the right caution for a
+# wholesaler.
+AGENT = {
+    # Below this reported confidence, a write is confirmed before it commits.
+    "CONFIDENCE_THRESHOLD": float(env("AGENT_CONFIDENCE_THRESHOLD", "0.75") or "0.75"),
+    # An amount this many times the business's typical transaction is treated as
+    # possibly misheard — "24,000" for a trader whose sales run to 2,400.
+    "UNUSUAL_AMOUNT_FACTOR": float(env("AGENT_UNUSUAL_AMOUNT_FACTOR", "5") or "5"),
+    # How long a pending confirmation stays answerable. A voice exchange happens
+    # in seconds; a stale token committing money later would be a bug.
+    "CONFIRMATION_TTL_SECONDS": int(
+        env("AGENT_CONFIRMATION_TTL_SECONDS", "300") or "300"
+    ),
+}

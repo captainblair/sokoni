@@ -70,6 +70,16 @@ class FloatRiskSerializer(serializers.Serializer):
     overdue_receivables = MoneyField()
 
 
+class PartyBalanceSerializer(serializers.Serializer):
+    currency = serializers.CharField(read_only=True)
+    party = serializers.CharField(read_only=True)
+    owed_to_business = MoneyField()
+    owed_by_business = MoneyField()
+    net_balance = MoneyField()
+    overdue = MoneyField()
+    open_debts = serializers.IntegerField(read_only=True)
+
+
 class BriefMessageSerializer(serializers.Serializer):
     kind = serializers.CharField(read_only=True)
     text = serializers.CharField(read_only=True)

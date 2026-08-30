@@ -71,7 +71,7 @@ def daily_brief(business) -> dict:
             line += f" {money(cash['payables_overdue'])} of that is already late."
         messages.append({"kind": FACT, "text": line})
 
-    messages.append(_float_message(risk, money))
+    messages.append(float_message(risk, money))
 
     return {
         "currency": currency,
@@ -84,7 +84,7 @@ def daily_brief(business) -> dict:
     }
 
 
-def _float_message(risk: dict, money) -> dict:
+def float_message(risk: dict, money) -> dict:
     """The one line that changes what a trader does next."""
     days = risk["horizon_days"]
 

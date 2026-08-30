@@ -27,7 +27,8 @@ the arithmetic live in Django and PostgreSQL; the AI only proposes what to recor
 | B5 — Financial ledger | ✅ Complete |
 | B6 — Debt management | ✅ Complete |
 | B7 — Financial intelligence | ✅ Complete |
-| Everything after B7 | Planned (see roadmap) |
+| B8 — Agent tools & confirmation | ✅ Complete |
+| Everything after B8 | Planned (see roadmap) |
 
 The project is built **one approved phase at a time**. Nothing below the "Planned" line
 exists in the codebase yet, and this README marks planned work explicitly so it is never
@@ -199,7 +200,7 @@ deploy.
 | `apps.debts` | Receivables, payables, payments, aging | Built |
 | `apps.finance` | Cash position, summaries, float risk | Built |
 | `apps.insights` | Trends and alerts | Planned |
-| `apps.agent` | Tool registry and confirmation workflow | Planned |
+| `apps.agent` | Tool registry and confirmation workflow | Built |
 | `apps.voice` | Audio jobs, transcripts, TTS artifacts | Planned |
 | `apps.audit` | Immutable trail of financial mutations | Planned |
 | `apps.integrations` | M-Pesa and future channels | Planned |
@@ -262,6 +263,13 @@ Party                                   Product
                    source_transaction ──► Transaction (nullable, one-to-one)
                    description · notes · source
                    is_active (archive flag)
+
+                 PendingAction
+                   business ──► Business
+                   user ──────► User
+                   token · tool · parameters
+                   question · reason · confidence
+                   expires_at · consumed_at
 ```
 
 `Membership` is the tenancy boundary: a user reaches a business only through it,
@@ -304,7 +312,10 @@ add rigour that this user base does not need and a vocabulary they do not use.
 
 ## AI and voice architecture
 
-Not yet implemented. Documented here because it constrains everything built before it.
+The **tool registry and confirmation workflow are built**. Speech-to-text, the LLM and
+ElevenLabs are not: those arrive in the voice phases. What exists now is the door an AI
+will have to walk through, so that when a model is attached it cannot invent a new way
+into the books.
 
 ```text
 User speaks
@@ -389,17 +400,18 @@ pass at the end.
 - Production settings enforce a strong `SECRET_KEY`, explicit `ALLOWED_HOSTS`, HSTS,
   secure cookies and SSL redirect
 - CORS restricted to an allowlist
-
 - **Business-scoped querysets** — every business query goes through
   `Business.objects.for_user(request.user)`, so a foreign ID returns 404
 - Role-based authorisation separating members from owners
 - A business can never be left without an owner
+- A fixed agent tool registry: the only operations an AI may name
+- Confirmation gates on writes that are uncertain, unusually large, or name a stranger
+- Confirmation tokens bound to the user and business that raised them, single-use, expiring
 
 **Planned**
 
 - Rate limiting and throttling on auth and voice endpoints (B9)
 - Audit logging of every financial mutation
-- Confirmation gates before AI-driven writes
 
 A user must never retrieve another business's financial data by changing an ID in a URL.
 This is enforced with tests, not assumed.
@@ -990,6 +1002,113 @@ returned alongside the sentences.
 All four accept `business` to report on a specific business, and otherwise use the active
 one.
 
+### Agent
+
+The one door an AI is allowed through. There is no language model here: a tool is callable
+by a test, a script or a form in exactly the same way, which is what makes the layer
+verifiable on its own.
+
+```text
+FORBIDDEN:  LLM → raw SQL → database
+REQUIRED:   LLM → structured intent → validation → service → database
+```
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/agent/tools/` | The published contract: names, parameters, which writes |
+| POST | `/api/v1/agent/execute/` | Run one tool, or redeem a confirmation |
+
+**The tools**
+
+| Name | Writes? | What it does |
+|------|---------|--------------|
+| `record_sale` | yes | Something sold, paid now or taken on credit |
+| `record_income` | yes | Money received that is not a sale of goods |
+| `record_purchase` | yes | Stock or goods bought for the business |
+| `record_expense` | yes | Money spent running the business |
+| `create_receivable` | yes | Someone owes the business |
+| `create_payable` | yes | The business owes someone |
+| `record_debt_payment` | yes | An instalment against a named party's debt |
+| `get_cash_position` | no | What is in hand and what is owed |
+| `get_summary` | no | Revenue, costs and cash over a period |
+| `get_debts` | no | Outstanding receivables and payables |
+| `get_party_balance` | no | Where one person stands |
+| `get_recent_transactions` | no | The latest ledger entries |
+| `check_float_risk` | no | Whether upcoming obligations can be met |
+| `get_daily_brief` | no | The whole picture, in sentences |
+
+Every write goes through the same domain service the REST API uses. A spoken sale is
+validated exactly like a typed one; there is no second, weaker path into the ledger.
+Spoken names are resolved to records: one clear match is used, several matches is a
+question, and no match at all is a new record — because a customer who has never been
+written down is the normal case for a business that has only ever used a notebook.
+
+**Record a sale**
+
+```json
+POST /api/v1/agent/execute/
+{
+  "tool": "record_sale",
+  "parameters": {
+    "amount": "2400.00",
+    "party": "Mary Wanjiku",
+    "payment_status": "credit"
+  },
+  "confidence": 0.92
+}
+```
+
+```json
+201 Created
+{
+  "status": "executed",
+  "message": "Recorded a sale of KES 2,400 to Mary Wanjiku, with KES 2,400 still owed."
+}
+```
+
+**When Sokoni stops to ask**
+
+Reads are never confirmed. Writes are confirmed when the interpretation is shaky:
+
+| Reason | When |
+|--------|------|
+| `low_confidence` | Reported confidence is below the threshold (default 0.75) |
+| `unusual_amount` | The amount is several times this business's typical transaction |
+| `new_party` | Nobody by that name has traded here before |
+
+```json
+200 OK
+{
+  "status": "confirmation_required",
+  "message": "Did you mean a sale of KES 2,400?",
+  "confirmation": {
+    "token": "...",
+    "reason": "low_confidence",
+    "expires_at": "..."
+  }
+}
+```
+
+Answering yes sends the token back, on its own. The parked parameters are the ones that
+were described, so a caller cannot smuggle different figures in behind a token it already
+holds. A token is bound to the user and the business that raised it, works once, and
+expires after a few minutes.
+
+A different kind of pause is `clarification_required`: the answer is not yes or no, it is
+*which one* — two Marys, or a party who owes in both directions. Nothing is parked,
+because the instruction was not specific enough to confirm.
+
+A new name that needs confirming is rolled back before the question is asked, so a
+question that is never answered leaves no half-finished customer behind.
+
+**Rules enforced by the backend**
+
+- There is no tool that is not on the published list
+- A write that cannot be carried out is `rejected` with a reason a person can be told
+- Asking a question never creates a record
+- A confirmation cannot be reused, expired, spent on another tool, or spent on another
+  business — including another of the same user's businesses
+
 An interactive OpenAPI/Swagger schema arrives in phase B9.
 
 ---
@@ -1001,7 +1120,7 @@ cd backend
 pytest
 ```
 
-Currently **244 tests**, running in about 30 seconds:
+Currently **312 tests**, running in about 17 seconds:
 
 | Area | Coverage |
 |------|----------|
@@ -1022,6 +1141,10 @@ Currently **244 tests**, running in about 30 seconds:
 | Summaries | Period boundaries, profit estimation, credit given, breakdowns |
 | Float risk | Risk levels, horizons, overdue and undated obligations |
 | Daily brief | Sentence wording, and facts kept distinct from estimates |
+| **Agent registry** | The published tool list, and nothing else |
+| Agent writes | Spoken names, voice source, the same validation as the REST API |
+| Confirmation | Low confidence, unusual amounts, new names, single-use tokens |
+| Clarification | Ambiguous names, and a party owing both ways |
 
 Useful variations:
 
@@ -1062,6 +1185,9 @@ Copy `.env.example` to `.env` and adjust. **Never commit `.env`.**
 | `JWT_SIGNING_KEY` | empty | Falls back to `DJANGO_SECRET_KEY` |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Frontend origins |
 | `WEB_PORT` | `8000` | Compose API port |
+| `AGENT_CONFIDENCE_THRESHOLD` | `0.75` | Below this, a write waits for a yes |
+| `AGENT_UNUSUAL_AMOUNT_FACTOR` | `5` | Multiple of a typical sale treated as possibly misheard |
+| `AGENT_CONFIRMATION_TTL_SECONDS` | `300` | How long a pending confirmation stays answerable |
 
 Reserved for later phases and intentionally unset: `ELEVENLABS_API_KEY`, `LLM_API_KEY`,
 `MPESA_CONSUMER_KEY`, `MPESA_CONSUMER_SECRET`.
@@ -1109,11 +1235,18 @@ sokoni/
 │   │   │   ├── services.py    # Payments, write-offs, ledger sync
 │   │   │   ├── serializers.py
 │   │   │   └── views.py
-│   │   └── finance/           # Derived figures, no models of its own
-│   │       ├── selectors.py   # The only place numbers are calculated
-│   │       ├── periods.py     # "today", "week", "month" → date ranges
-│   │       ├── brief.py       # Facts and estimates turned into sentences
-│   │       ├── serializers.py
+│   │   ├── finance/           # Derived figures, no models of its own
+│   │   │   ├── selectors.py   # The only place numbers are calculated
+│   │   │   ├── periods.py     # "today", "week", "month" → date ranges
+│   │   │   ├── brief.py       # Facts and estimates turned into sentences
+│   │   │   ├── serializers.py
+│   │   │   └── views.py
+│   │   └── agent/             # Tool registry and confirmation, no LLM
+│   │       ├── registry.py    # The fixed list of operations
+│   │       ├── tools.py       # Thin wrappers over domain services
+│   │       ├── resolvers.py   # Spoken names → records
+│   │       ├── confirmation.py
+│   │       ├── execution.py   # Validate → resolve → maybe ask → write
 │   │       └── views.py
 │   ├── config/
 │   │   ├── settings/
@@ -1137,6 +1270,11 @@ sokoni/
 │   │   ├── test_businesses_crud.py
 │   │   ├── test_businesses_isolation.py
 │   │   ├── test_businesses_membership.py
+│   │   ├── test_agent_confirmation.py
+│   │   ├── test_agent_isolation.py
+│   │   ├── test_agent_reads.py
+│   │   ├── test_agent_registry.py
+│   │   ├── test_agent_writes.py
 │   │   ├── test_catalog.py
 │   │   ├── test_debts_crud.py
 │   │   ├── test_debts_from_transactions.py
@@ -1183,8 +1321,8 @@ Each phase is planned, approved, implemented, tested and reviewed before the nex
 | B5 | Financial ledger — transactions, methods, statuses, `source` | ✅ Complete |
 | B6 | Debt management — receivables, payables, partial payments, aging | ✅ Complete |
 | B7 | Financial intelligence — cash position, summaries, float risk | ✅ Complete |
-| B8 | Agent tool contracts and confirmation model (no LLM yet) | Next |
-| B9 | OpenAPI docs, rate limiting, audit coverage, full regression suite | Planned |
+| B8 | Agent tool contracts and confirmation model (no LLM yet) | ✅ Complete |
+| B9 | OpenAPI docs, rate limiting, audit coverage, full regression suite | Next |
 
 ### Frontend
 
