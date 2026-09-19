@@ -41,3 +41,8 @@ Thumbs.db
 
 # Docker
 *.pid
+
+# Academic report, signatures and generator scripts — submitted separately
+docs/
+*.docx
+*.pdf

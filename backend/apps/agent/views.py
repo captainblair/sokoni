@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 from apps.agent import confirmation, execution
 from apps.agent.registry import ToolContext, ToolError, UnknownTool, all_tools, get_tool
 from apps.agent.serializers import OutcomeSerializer, ToolCallSerializer
+from apps.core.schema import ToolRegistrySerializer
 from apps.core.throttles import AgentRateThrottle
 from apps.core.viewsets import BusinessScopedMixin
 
@@ -22,7 +23,7 @@ class ToolRegistryView(APIView):
 
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(tags=["agent"])
+    @extend_schema(tags=["agent"], responses=ToolRegistrySerializer)
     def get(self, request):
         return Response({"tools": [tool.schema() for tool in all_tools()]})
 

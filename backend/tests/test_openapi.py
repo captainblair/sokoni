@@ -1,10 +1,7 @@
 """The published contract is generated from the real serializers."""
 
-import pytest
 from django.urls import reverse
 from rest_framework import status
-
-pytestmark = pytest.mark.django_db
 
 SCHEMA = reverse("schema")
 SWAGGER = reverse("swagger-ui")
@@ -61,3 +58,14 @@ def test_swagger_ui_is_public(api_client):
 
 def test_redoc_is_public(api_client):
     assert api_client.get(REDOC).status_code == status.HTTP_200_OK
+
+
+def test_swagger_can_fetch_the_schema_as_json(api_client):
+    """Swagger UI asks for JSON first; that request must not 500."""
+    response = api_client.get(
+        SCHEMA, HTTP_ACCEPT="application/json, application/yaml, */*"
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert "application/json" in response["Content-Type"]
+    assert "openapi" in response.data

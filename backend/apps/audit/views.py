@@ -23,6 +23,9 @@ class AuditEventViewSet(
     serializer_class = AuditEventSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset.none()
+
         if getattr(self, "detail", False):
             return self.queryset.filter(
                 business__in=Business.objects.for_user(self.request.user)

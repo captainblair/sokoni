@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from apps.businesses.models import Business, Membership, MembershipRole
@@ -27,10 +28,15 @@ class BusinessSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
+    @extend_schema_field(serializers.CharField(allow_null=True))
     def get_my_role(self, obj):
-        membership = obj.membership_for(self.context["request"].user)
+        request = self.context.get("request")
+        if request is None or not getattr(request, "user", None):
+            return None
+        membership = obj.membership_for(request.user)
         return membership.role if membership else None
 
+    @extend_schema_field(serializers.IntegerField())
     def get_member_count(self, obj):
         return obj.memberships.count()
 

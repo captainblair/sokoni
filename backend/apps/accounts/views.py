@@ -1,3 +1,4 @@
+from drf_spectacular.utils import extend_schema
 from rest_framework import generics, status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -10,6 +11,7 @@ from rest_framework_simplejwt.views import (
     TokenVerifyView,
 )
 
+from apps.core.schema import MessageSerializer
 from apps.core.throttles import AuthRateThrottle
 from apps.accounts.serializers import (
     LoginSerializer,
@@ -55,7 +57,9 @@ class LogoutView(APIView):
     """Blacklists the supplied refresh token so it cannot be reused."""
 
     permission_classes = [IsAuthenticated]
+    serializer_class = LogoutSerializer
 
+    @extend_schema(tags=["auth"], request=LogoutSerializer, responses={204: None})
     def post(self, request):
         serializer = LogoutSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -95,7 +99,13 @@ class VerifyView(TokenVerifyView):
 
 class PasswordChangeView(APIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = PasswordChangeSerializer
 
+    @extend_schema(
+        tags=["auth"],
+        request=PasswordChangeSerializer,
+        responses={200: MessageSerializer},
+    )
     def post(self, request):
         serializer = PasswordChangeSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)

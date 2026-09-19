@@ -24,7 +24,8 @@ class BusinessScopedMixin:
         if hasattr(self, "_resolved_business"):
             return self._resolved_business
 
-        available = Business.objects.for_user(self.request.user)
+        user = getattr(self.request, "user", None)
+        available = Business.objects.for_user(user)
         requested = self.request.data.get("business") or self.request.query_params.get(
             "business"
         )
@@ -39,7 +40,7 @@ class BusinessScopedMixin:
                 # 404 rather than 403: never confirm a foreign business exists.
                 raise NotFound("Business not found.")
         else:
-            business = self.request.user.active_business
+            business = getattr(user, "active_business", None)
             if business is None or not available.filter(pk=business.pk).exists():
                 raise ValidationError(
                     {
@@ -60,6 +61,9 @@ class BusinessScopedViewSet(BusinessScopedMixin, viewsets.ModelViewSet):
     search_fields: list[str] = []
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset.none()
+
         if getattr(self, "detail", False):
             # A record is addressed by its own ID, so it only has to belong to
             # one of the user's businesses — not necessarily the active one.

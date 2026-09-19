@@ -182,6 +182,9 @@ SPECTACULAR_SETTINGS = {
     ),
     "VERSION": "0.9.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],
+    "SERVE_AUTHENTICATION": [],
+    "SERVE_PUBLIC": True,
     "COMPONENT_SPLIT_REQUEST": True,
     "SCHEMA_PATH_PREFIX": r"/api/v1",
     "TAGS": [

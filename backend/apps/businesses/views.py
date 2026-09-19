@@ -1,4 +1,5 @@
 from django.shortcuts import get_object_or_404
+from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
@@ -24,6 +25,18 @@ from apps.businesses.services import (
 OWNER_ONLY_ACTIONS = {"update", "partial_update", "destroy", "manage_member"}
 
 
+@extend_schema_view(
+    manage_member=extend_schema(
+        parameters=[
+            OpenApiParameter(
+                "membership_id",
+                str,
+                OpenApiParameter.PATH,
+                description="Membership id of the person being changed or removed.",
+            )
+        ]
+    )
+)
 class BusinessViewSet(viewsets.ModelViewSet):
     """
     Businesses the requesting user belongs to.

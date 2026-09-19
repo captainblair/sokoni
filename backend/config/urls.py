@@ -1,11 +1,9 @@
 from django.contrib import admin
 from django.urls import include, path
-from drf_spectacular.views import (
-    SpectacularAPIView,
-    SpectacularRedocView,
-    SpectacularSwaggerView,
-)
+from drf_spectacular.views import SpectacularRedocView, SpectacularSwaggerView
 from rest_framework.permissions import AllowAny
+
+from apps.core.views import PublicSchemaView
 
 schema_kwargs = {
     "permission_classes": [AllowAny],
@@ -15,7 +13,11 @@ schema_kwargs = {
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("api/schema/", SpectacularAPIView.as_view(**schema_kwargs), name="schema"),
+    path(
+        "api/schema/",
+        PublicSchemaView.as_view(),
+        name="schema",
+    ),
     path(
         "api/docs/",
         SpectacularSwaggerView.as_view(url_name="schema", **schema_kwargs),
